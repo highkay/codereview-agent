@@ -10,7 +10,7 @@ ENV PYTHONUNBUFFERED=1
 COPY . .
 
 # 安装项目依赖
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir --upgrade -i https://pypi.tuna.tsinghua.edu.cn/simple pydantic
 
 # 暴露端口
 EXPOSE 8000
