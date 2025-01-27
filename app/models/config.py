@@ -16,6 +16,7 @@ class LLMConfig(BaseModel):
 class ReviewConfig(BaseModel):
     model_config = ConfigDict(title="评审配置")
     quality_threshold: float = Field(8.5, description="质量阈值分数")
+    max_security_issues: int = Field(5, description="最大安全问题数量")
     ignore_patterns: List[str] = Field(
         default=[
             '**/node_modules/', '**/vendor/', '**/venv/', '**/.venv/',

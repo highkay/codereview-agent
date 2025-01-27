@@ -46,20 +46,39 @@ class GiteaClient(SCMProvider):
             "Authorization": f"token {config.token}",
             "Content-Type": "application/json"
         }
-        logger.info("GiteaClient initialized with URL: {}", config.url)
+        logger.info("GiteaClient initialized with URL: {} and token length: {}", 
+                    config.url if config and hasattr(config, 'url') else "unknown", 
+                    len(config.token) if config and hasattr(config, 'token') and config.token else 0)
 
     async def _make_request(self, method: str, path: str, **kwargs) -> dict:
         url = f"{self.config.url}/api/v1/{path}"
-        logger.debug("Making {} request to {}", method, url)
+        logger.debug("Making {} request to {} with params: {}", 
+                     method if method else "unknown", 
+                     url if url else "unknown", 
+                     kwargs if kwargs else "none")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.request(method, url, headers=self.headers, **kwargs) as response:
                     response.raise_for_status()
                     data = await response.json()
-                    logger.debug("Request successful: {} {}", method, url)
+                    logger.debug("Request successful: {} {} with status code: {}", 
+                                 method if method else "unknown", 
+                                 url if url else "unknown", 
+                                 response.status if response and hasattr(response, 'status') else "unknown")
                     return data
+        except aiohttp.ClientError as e:
+            status = getattr(getattr(e, 'response', None), 'status', 'N/A')
+            logger.error("Request failed: {} {} - Status: {} - Error: {}", 
+                         method if method else "unknown", 
+                         url if url else "unknown", 
+                         status if status else "N/A", 
+                         str(e))
+            raise
         except Exception as e:
-            logger.error("Request failed: {} {} - {}", method, url, str(e))
+            logger.error("Unexpected error in request: {} {} - Error: {}", 
+                         method if method else "unknown", 
+                         url if url else "unknown", 
+                         str(e))
             raise
 
     async def get_diff(self, owner: str, repo: str, pr_id: str) -> List[CommitDiff]:
@@ -96,7 +115,7 @@ class GiteaClient(SCMProvider):
                 ))
             
             logger.info("Found {} commits in PR {}/{} #{}", 
-                       len(diffs), owner, repo, pr_id)
+                       len(commits), owner, repo, pr_id)
             return diffs
         except Exception as e:
             logger.error("Failed to get diff for PR {}/{} #{}: {}", 
@@ -104,8 +123,12 @@ class GiteaClient(SCMProvider):
             raise
 
     async def post_comment(self, owner: str, repo: str, pr_id: str, comments: List[ReviewComment]):
-        logger.info("Posting {} comments to PR {}/{} #{}", 
-                   len(comments), owner, repo, pr_id)
+        logger.info("Posting {} comments to PR {}/{} #{} for commit: {}", 
+                    len(comments) if comments else 0, 
+                    owner if owner else "unknown", 
+                    repo if repo else "unknown", 
+                    pr_id if pr_id else "unknown", 
+                    comments[0].commit_id[:8] if comments and len(comments) > 0 and hasattr(comments[0], 'commit_id') else "unknown")
         if not comments:
             return
             
@@ -129,11 +152,17 @@ class GiteaClient(SCMProvider):
                     "event": "comment"
                 }
             )
-            logger.info("Successfully posted comments to PR {}/{} #{}", 
-                       owner, repo, pr_id)
+            logger.info("Successfully posted {} comments to PR {}/{} #{}", 
+                        len(comments) if comments else 0, 
+                        owner if owner else "unknown", 
+                        repo if repo else "unknown", 
+                        pr_id if pr_id else "unknown")
         except Exception as e:
             logger.error("Failed to post comments to PR {}/{} #{}: {}", 
-                        owner, repo, pr_id, str(e))
+                        owner if owner else "unknown", 
+                        repo if repo else "unknown", 
+                        pr_id if pr_id else "unknown", 
+                        str(e))
             raise
 
     async def approve_pr(self, owner: str, repo: str, pr_id: str):
@@ -157,14 +186,13 @@ class GiteaClient(SCMProvider):
     async def merge_pr(self, owner: str, repo: str, pr_id: str):
         logger.info("Attempting to merge PR {}/{} #{}", owner, repo, pr_id)
         try:
-            await self._make_request(
+            response = await self._make_request(
                 "POST", 
                 f"repos/{owner}/{repo}/pulls/{pr_id}/merge",
                 json={
-                    "Do": "merge",  # 合并方式：merge, rebase, squash, rebase-merge
-                    "merge_message_field": "",  # 可选的合并信息
-                    "merge_title_field": "",    # 可选的合并标题
-                    "force_merge": False        # 是否强制合并
+                    "style": "merge",  # 合并方式：merge, rebase, rebase-merge, squash
+                    "message": "",     # 可选的合并信息
+                    "title": ""        # 可选的合并标题
                 }
             )
             logger.info("Successfully merged PR {}/{} #{}", owner, repo, pr_id)
@@ -174,8 +202,8 @@ class GiteaClient(SCMProvider):
             raise
 
     async def get_file_context(self, owner: str, repo: str, file_path: str, commit_id: str, line_start: int, line_count: int) -> str:
-        logger.debug("Getting file context for {}/{} {} @ {}", 
-                    owner, repo, file_path, commit_id)
+        logger.debug("Getting file context for {}/{} {} @ {} with lines: {}-{}", 
+                    owner, repo, file_path, commit_id[:8], line_start or 'start', line_count or 'end')
         try:
             # 使用raw内容API直接获取文件内容
             async with aiohttp.ClientSession() as session:
@@ -191,8 +219,10 @@ class GiteaClient(SCMProvider):
             end = min(len(lines), line_start + line_count)
             
             context = "\n".join(lines[start:end])
-            logger.debug("Got {} lines of context for {}", len(context.splitlines()), file_path)
+            logger.debug("Got {} lines of context for {} (size: {} bytes)", 
+                        len(context.splitlines()), file_path, len(context))
             return context
         except Exception as e:
-            logger.error("Failed to get file context for {}: {}", file_path, str(e))
+            logger.error("Failed to get file context for {}: {}", 
+                        file_path, str(e))
             return ""  # 如果获取上下文失败，返回空字符串 

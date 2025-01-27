@@ -11,7 +11,7 @@ class CodeReviewAgent:
         self.config = config
         self.scm = scm
         self.llm = llm
-        logger.info("CodeReviewAgent initialized with config: {}", config)
+        logger.info("CodeReviewAgent initialized with model: {} and config: {}", config.llm.model, config.dict())
 
     def _filter_files(self, files: List[dict]) -> List[dict]:
         """过滤不需要评审的文件"""
@@ -29,7 +29,8 @@ class CodeReviewAgent:
         # 过滤文件
         filtered_files = self._filter_files(commit_diff.files)
         if not filtered_files:
-            logger.info("No files to review after filtering for commit {}", commit_diff.commit_id[:8])
+            logger.info("No files to review after filtering for commit {} (changed files: {})", 
+                        commit_diff.commit_id[:8], len(commit_diff.files))
             return None
             
         # 收集所有文件的上下文
@@ -38,7 +39,7 @@ class CodeReviewAgent:
         
         for file in filtered_files:
             if "filename" not in file:
-                logger.error("Invalid file data - missing filename")
+                logger.error("Invalid file data - missing filename in commit: {}", commit_diff.commit_id[:8])
                 continue
                 
             file_path = file["filename"]
@@ -56,7 +57,7 @@ class CodeReviewAgent:
                 )
                 
                 if not context:
-                    logger.warning("No context returned for file: {}", file_path)
+                    logger.warning("No context returned for file: {} in commit: {}", file_path, commit_diff.commit_id[:8])
                     continue
                     
                 files_context.append({
@@ -65,11 +66,14 @@ class CodeReviewAgent:
                     "context": context
                 })
             except Exception as e:
-                logger.error("Error getting context for file {}: {}", file_path, str(e))
+                logger.error("Error getting context for file {} in commit {}: {}", 
+                             file_path, commit_diff.commit_id[:8], str(e))
                 continue
                 
         if not files_context:
-            logger.warning("No valid file contexts collected for commit {}", commit_diff.commit_id[:8])
+            logger.warning("No valid file contexts collected for commit {} (total files: {})", 
+                           commit_diff.commit_id[:8] if commit_diff and commit_diff.commit_id else "unknown", 
+                           len(commit_diff.files) if commit_diff and hasattr(commit_diff, 'files') else 0)
             return None
             
         # 创建并验证上下文对象
@@ -84,40 +88,45 @@ class CodeReviewAgent:
             )
             return context
         except Exception as e:
-            logger.error("Error creating CodeContext: {}", str(e))
+            logger.error("Error creating CodeContext for commit {}: {}", 
+                         commit_diff.commit_id[:8] if commit_diff and commit_diff.commit_id else "unknown", 
+                         str(e))
             return None
 
     async def _analyze_code(self, context: CodeContext) -> ReviewResult:
         """分析整个commit的代码变更"""
-        logger.debug("Analyzing commit: {} - {}", 
-                    context.metadata["commit_id"][:8],
-                    context.metadata["commit_message"])
+        logger.debug("Analyzing commit: {} - {} (files: {})",
+                    context.metadata["commit_id"][:8], 
+                    context.metadata["commit_message"].split('\n')[0][:50],
+                    len(context.files_context))
         
         try:
             result = await self.llm.analyze_code(context)
             
             # 记录评审结果
-            logger.info("Code analysis completed for commit {} with scores:", 
-                       context.metadata["commit_id"][:8])
-            logger.info("- Overall Score: {}/10", result.score)
-            logger.info("- Security: {}/10", result.quality_metrics.security_score)
-            logger.info("- Performance: {}/10", result.quality_metrics.performance_score)
-            logger.info("- Readability: {}/10", result.quality_metrics.readability_score)
-            logger.info("- Best Practices: {}/10", result.quality_metrics.best_practice_score)
+            logger.info("Code analysis completed for commit {} with scores and {} files:",
+                       context.metadata["commit_id"][:8], len(context.files_context))
+            logger.info("- Overall Score: {}/10 (weight: {})", result.score, self.config.review.quality_threshold)
+            logger.info("- Security: {}/10 (weight: {})", result.quality_metrics.security_score, self.config.review.scoring_rules["security"])
+            logger.info("- Performance: {}/10 (weight: {})", result.quality_metrics.performance_score, self.config.review.scoring_rules["performance"])
+            logger.info("- Readability: {}/10 (weight: {})", result.quality_metrics.readability_score, self.config.review.scoring_rules["readability"])
+            logger.info("- Best Practices: {}/10 (weight: {})", result.quality_metrics.best_practice_score, self.config.review.scoring_rules["best_practice"])
             
             if result.security_issues:
-                logger.warning("Found {} security issues in commit {}", 
-                             len(result.security_issues), 
-                             context.metadata["commit_id"][:8])
+                logger.warning("Found {} security issues in commit {} (threshold: {})",
+                             len(result.security_issues), context.metadata["commit_id"][:8], self.config.review.max_security_issues)
             
             return result
         except Exception as e:
-            logger.error("Error analyzing code: {}\nFull error: {}", str(e), repr(e))
+            logger.error("Error analyzing code for commit {}: {}\nFull error: {}", 
+                         context.metadata.get("commit_id", "unknown")[:8], 
+                         str(e), repr(e))
             # 返回一个默认的评审结果
             return ReviewResult(
                 score=0,
                 comments=["代码评审过程中发生错误"],
                 suggestions=[],
+                issues=[],
                 security_issues=[],
                 quality_metrics=QualityMetrics(
                     security_score=0,
@@ -129,7 +138,8 @@ class CodeReviewAgent:
 
     def _generate_comments(self, result: ReviewResult, context: CodeContext) -> List[ReviewComment]:
         """生成评审评论"""
-        logger.debug("Generating comments for commit: {}", context.metadata["commit_id"][:8])
+        logger.debug("Generating comments for commit: {} with {} issues", 
+                     context.metadata["commit_id"][:8], len(result.issues))
         comments = []
         
         # 添加总体评分评论
@@ -140,10 +150,10 @@ class CodeReviewAgent:
             "",
             "| 评审维度 | 得分 | 权重 |",
             "|---------|------|------|",
-            f"| 🛡️ 安全性 | {result.quality_metrics.security_score:.1f}/10 | 30% |",
-            f"| ⚡ 性能 | {result.quality_metrics.performance_score:.1f}/10 | 20% |",
-            f"| 📖 可读性 | {result.quality_metrics.readability_score:.1f}/10 | 20% |",
-            f"| ✨ 最佳实践 | {result.quality_metrics.best_practice_score:.1f}/10 | 30% |",
+            f"| 🛡️ 安全性 | {result.quality_metrics.security_score:.1f}/10 | {self.config.review.scoring_rules['security']:.0f} |",
+            f"| ⚡ 性能 | {result.quality_metrics.performance_score:.1f}/10 | {self.config.review.scoring_rules['performance']:.0f} |",
+            f"| 📖 可读性 | {result.quality_metrics.readability_score:.1f}/10 | {self.config.review.scoring_rules['readability']:.0f} |",
+            f"| ✨ 最佳实践 | {result.quality_metrics.best_practice_score:.1f}/10 | {self.config.review.scoring_rules['best_practice']:.0f} |",
             ""
         ]
         
@@ -184,29 +194,33 @@ class CodeReviewAgent:
             commit_id=context.metadata["commit_id"]
         ))
         
-        logger.info("Generated {} review comments", len(comments))
+        logger.info("Generated {} review comments for commit {}", 
+                    len(comments), context.metadata["commit_id"][:8])
         return comments
 
     async def review_pr(self, owner: str, repo: str, pr_id: str) -> bool:
         """执行PR评审的主流程"""
-        logger.info("Starting PR review for {}/{} #{}", owner, repo, pr_id)
+        logger.info("Starting PR review for {}/{} #{}", 
+                    owner, repo, pr_id)
         try:
             # 获取PR的所有commits及其diff
             commit_diffs = await self.scm.get_diff(owner, repo, pr_id)
-            logger.info("Found {} commits to review in PR", len(commit_diffs))
+            logger.info("Found {} commits to review in PR {}/{} #{}", 
+                        len(commit_diffs), owner, repo, pr_id)
             
             all_results = []
             for commit_diff in commit_diffs:
                 try:
-                    logger.info("Reviewing commit: {} - {}", 
-                              commit_diff.commit_id[:8], 
-                              commit_diff.commit_message)
+                    logger.info("Reviewing commit: {} - {} (files: {})",
+                               commit_diff.commit_id[:8],
+                               commit_diff.commit_message.split('\n')[0][:50],
+                               len(commit_diff.files))
                     
                     # 收集整个commit的上下文
                     context = await self._collect_context(owner, repo, commit_diff)
                     if not context:
-                        logger.warning("Skipping commit {} due to no reviewable files", 
-                                     commit_diff.commit_id[:8])
+                        logger.warning("Skipping commit {} due to no reviewable files (total files: {})",
+                                     commit_diff.commit_id[:8], len(commit_diff.files))
                         continue
                     
                     # 分析整个commit的代码
@@ -217,29 +231,32 @@ class CodeReviewAgent:
                     comments = self._generate_comments(result, context)
                     
                     await self.scm.post_comment(owner, repo, pr_id, comments)
-                    logger.info("Posted review comments for commit {}", commit_diff.commit_id[:8])
+                    logger.info("Posted {} review comments for commit {}", 
+                                len(comments), commit_diff.commit_id[:8])
                 except Exception as commit_error:
-                    logger.error("Error processing commit {}: {}\nFull error: {}", 
-                               commit_diff.commit_id[:8], str(commit_error), repr(commit_error))
+                    logger.error("Error processing commit {} with {} files: {}\nFull error: {}",
+                                commit_diff.commit_id[:8], len(commit_diff.files), str(commit_error), repr(commit_error))
                     continue
             
             # 处理评审结果 - 使用最低分作为最终分数
             if all_results:
                 min_score = min(r.score for r, _ in all_results)
-                logger.info("PR review completed with minimum score: {}", min_score)
+                logger.info("PR review completed with minimum score: {} (threshold: {})", 
+                            min_score, self.config.review.quality_threshold)
                 if min_score >= self.config.review.quality_threshold:
-                    logger.info("PR quality meets threshold ({}), attempting to approve and merge", 
-                              self.config.review.quality_threshold)
+                    logger.info("PR quality meets threshold ({} >= {}), attempting to approve and merge",
+                               min_score, self.config.review.quality_threshold)
                     # 先批准PR
                     await self.scm.approve_pr(owner, repo, pr_id)
                     # 再合并PR
                     await self.scm.merge_pr(owner, repo, pr_id)
                 else:
-                    logger.info("PR quality below threshold ({} < {})", 
-                              min_score, self.config.review.quality_threshold)
+                    logger.info("PR quality below threshold ({} < {}), skipping approval",
+                               min_score, self.config.review.quality_threshold)
             
             return True
             
         except Exception as e:
-            logger.error("Error reviewing PR {}: {}\nFull error: {}", pr_id, str(e), repr(e))
+            logger.error("Error reviewing PR {}/{} #{}: {}\nFull error: {}", 
+                         owner, repo, pr_id, str(e), repr(e))
             return False 

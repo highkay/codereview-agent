@@ -6,6 +6,7 @@ from app.core.scm import GiteaClient
 from app.services.llm_service import LLMService
 from app.models.config import AppConfig
 from app.routers.config_ui import load_config
+import logging
 
 router = APIRouter()
 
@@ -30,7 +31,11 @@ async def process_pr(owner: str, repo: str, pr_id: str):
         # 执行评审
         await agent.review_pr(owner, repo, pr_id)
     except Exception as e:
-        print(f"Error processing PR {pr_id}: {e}")
+        logger.error("Error processing PR {}/{} #{}: {}", 
+                    owner if owner else "unknown", 
+                    repo if repo else "unknown", 
+                    pr_id if pr_id else "unknown", 
+                    str(e))
 
 @router.post("/webhook/gitea")
 async def handle_webhook(

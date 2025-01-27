@@ -37,6 +37,10 @@ class CodeContext(BaseModel):
     files_context: List[dict]  # 包含每个文件的上下文信息
     metadata: Dict[str, str]  # commit 相关的元数据
 
+    def __len__(self) -> int:
+        """返回文件上下文的数量"""
+        return len(self.files_context)
+
 REVIEW_PROMPT = """你是一个专业的代码评审专家，请根据以下代码变更内容进行评审。评审时请特别注意以下几点：
 
 1. 安全性（占比30%）：
@@ -129,18 +133,25 @@ class LLMService:
         if not self.api_key:
             raise ValueError("API key is required")
             
-        logger.info("Setting up LLMService with model: {}", self.model_name)
+        logger.info("Setting up LLMService with model: {} and max_tokens: {}", 
+                    self.model_name if hasattr(self, 'model_name') else "unknown", 
+                    self.config.max_tokens if hasattr(self, 'config') and hasattr(self.config, 'max_tokens') else 0)
         litellm.api_key = self.api_key
         litellm.set_verbose = False
         
         try:
             self.tokenizer = tiktoken.encoding_for_model("gpt-4")
-            logger.info("Tokenizer initialized successfully")
+            logger.info("Tokenizer initialized successfully for model: {}", 
+                        self.model_name if hasattr(self, 'model_name') else "unknown")
         except Exception as e:
-            logger.error("Error initializing tokenizer: {}", str(e))
+            logger.error("Error initializing tokenizer for model {}: {}", 
+                         self.model_name if hasattr(self, 'model_name') else "unknown", 
+                         str(e))
             raise
             
-        logger.info("LLMService initialized successfully")
+        logger.info("LLMService initialized successfully with model: {} and chunk_size: {}", 
+                    self.model_name if hasattr(self, 'model_name') else "unknown", 
+                    self.config.max_tokens if hasattr(self, 'config') and hasattr(self.config, 'max_tokens') else 0)
     
     def _split_code_chunks(self, context: CodeContext) -> List[CodeContext]:
         max_tokens = self.config.max_tokens - 1000  # 预留空间给prompt和response
@@ -208,7 +219,9 @@ class LLMService:
             ]
             chunks.append(current_chunk)
         
-        logger.info("Split code into {} chunks", len(chunks))
+        logger.info("Split code into {} chunks with total size: {} characters", 
+                    len(chunks) if chunks else 0, 
+                    sum(len(chunk.diff) if hasattr(chunk, 'diff') else 0 for chunk in chunks) if chunks else 0)
         return chunks
 
     async def analyze_code(self, context: CodeContext) -> ReviewResult:
@@ -216,7 +229,9 @@ class LLMService:
         results = []
         
         for i, chunk in enumerate(chunks):
-            logger.info("Analyzing chunk {}/{}", i + 1, len(chunks))
+            logger.info("Analyzing chunk {}/{} with size: {} characters", 
+                        i + 1, len(chunks) if chunks else 0, 
+                        len(chunk.diff) if hasattr(chunk, 'diff') else 0)
             
             # 格式化文件上下文
             files_context_str = "\n\n".join(
@@ -226,11 +241,13 @@ class LLMService:
             
             # 验证必需的参数
             if not context.metadata.get("commit_message"):
-                logger.error("Missing commit message in metadata")
+                logger.error("Missing commit message in metadata for commit: {}", 
+                             context.metadata.get("commit_id", "unknown")[:8] if context and hasattr(context, 'metadata') else "unknown")
                 raise ValueError("Missing commit message in metadata")
                 
             if not chunk.diff:
-                logger.error("Missing diff content")
+                logger.error("Missing diff content for commit: {}", 
+                             context.metadata.get("commit_id", "unknown")[:8] if context and hasattr(context, 'metadata') else "unknown")
                 raise ValueError("Missing diff content")
             
             try:
@@ -251,7 +268,9 @@ class LLMService:
                 raise ValueError("Empty prompt after formatting")
             
             try:
-                logger.info("Sending request to LLM model: {}", self.model_name)
+                logger.info("Sending request to LLM model: {} with prompt size: {} characters", 
+                            self.model_name if hasattr(self, 'model_name') else "unknown", 
+                            len(prompt) if prompt else 0)
                 
                 try:
                     response = await litellm.acompletion(
@@ -259,15 +278,19 @@ class LLMService:
                         messages=[{"role": "user", "content": prompt}],
                         temperature=0.2
                     )
-                    logger.info("Received response from LLM")
+                    logger.info("Received response from LLM with size: {} characters", 
+                                len(str(response)) if response else 0)
                     
                     if not response or not hasattr(response, 'choices') or not response.choices:
-                        logger.error("Invalid response format from LLM: {}", response)
+                        logger.error("Invalid response format from LLM. Expected JSON, got: {}", 
+                                     type(response).__name__ if response else "None")
                         raise ValueError("Invalid response format from LLM")
                         
                     response_text = response.choices[0].message.content
                 except Exception as llm_error:
-                    logger.error("Error calling LLM: {}", str(llm_error))
+                    logger.error("Error calling LLM model {}: {}", 
+                                 self.model_name if hasattr(self, 'model_name') else "unknown", 
+                                 str(llm_error))
                     raise
                 
                 response_text = response_text.strip()
@@ -277,13 +300,33 @@ class LLMService:
                 json_end = response_text.rfind("}") + 1
                 
                 if json_start == -1 or json_end <= json_start:
-                    logger.error("No valid JSON found in response")
-                    raise ValueError("No valid JSON found in response")
+                    logger.error("No valid JSON found in response of size: {} characters", 
+                                 len(str(response)) if response else 0)
+                    # 返回默认结果而不是抛出异常
+                    return ReviewResult(
+                        score=0,
+                        issues=[],
+                        security_issues=[],
+                        quality_metrics=QualityMetrics(
+                            security_score=0,
+                            performance_score=0,
+                            readability_score=0,
+                            best_practice_score=0
+                        )
+                    )
                 
                 response_text = response_text[json_start:json_end]
                 
                 try:
                     import json
+                    # 尝试清理和格式化 JSON 字符串
+                    response_text = response_text.replace('\n', ' ').replace('\r', '')
+                    # 处理可能的 markdown 代码块
+                    if '```json' in response_text:
+                        response_text = response_text.split('```json')[-1].split('```')[0]
+                    elif '```' in response_text:
+                        response_text = response_text.split('```')[-2]
+                    
                     # 先尝试解析JSON
                     json_obj = json.loads(response_text)
                     
@@ -297,9 +340,38 @@ class LLMService:
                     
                     for field, field_type in required_fields.items():
                         if field not in json_obj:
-                            raise ValueError(f"Missing required field: {field}")
-                        if not isinstance(json_obj[field], field_type):
-                            raise ValueError(f"Field {field} has wrong type. Expected {field_type}, got {type(json_obj[field])}")
+                            logger.warning("Missing required field: {} in response for commit: {}, adding default value", 
+                                           field, context.metadata.get("commit_id", "unknown")[:8] if context and hasattr(context, 'metadata') else "unknown")
+                            if field == "issues":
+                                json_obj["issues"] = []
+                            elif field == "security_issues":
+                                json_obj["security_issues"] = []
+                            elif field == "quality_metrics":
+                                json_obj["quality_metrics"] = {
+                                    "security_score": 0.0,
+                                    "performance_score": 0.0,
+                                    "readability_score": 0.0,
+                                    "best_practice_score": 0.0
+                                }
+                            elif field == "score":
+                                json_obj["score"] = 0.0
+                        elif not isinstance(json_obj[field], field_type):
+                            logger.warning("Field {} has wrong type. Expected {}, got {}. Converting to default value.", 
+                                           field, field_type.__name__ if hasattr(field_type, '__name__') else str(field_type), 
+                                           type(json_obj[field]).__name__ if json_obj and field in json_obj else "unknown")
+                            if field == "issues":
+                                json_obj["issues"] = []
+                            elif field == "security_issues":
+                                json_obj["security_issues"] = []
+                            elif field == "quality_metrics":
+                                json_obj["quality_metrics"] = {
+                                    "security_score": 0.0,
+                                    "performance_score": 0.0,
+                                    "readability_score": 0.0,
+                                    "best_practice_score": 0.0
+                                }
+                            elif field == "score":
+                                json_obj["score"] = 0.0
                     
                     # 检查 quality_metrics 的字段
                     required_metrics = {
@@ -309,20 +381,30 @@ class LLMService:
                         "best_practice_score": float
                     }
                     
-                    for metric, metric_type in required_metrics.items():
-                        if metric not in json_obj["quality_metrics"]:
-                            raise ValueError(f"Missing required metric: {metric}")
-                        if not isinstance(json_obj["quality_metrics"][metric], metric_type):
-                            raise ValueError(f"Metric {metric} has wrong type. Expected {metric_type}")
+                    if "quality_metrics" in json_obj:
+                        for metric, metric_type in required_metrics.items():
+                            if metric not in json_obj["quality_metrics"]:
+                                logger.warning("Missing required metric: {} in quality metrics for commit: {}, adding default value", 
+                                               metric, context.metadata.get("commit_id", "unknown")[:8] if context and hasattr(context, 'metadata') else "unknown")
+                                json_obj["quality_metrics"][metric] = 0.0
+                            elif not isinstance(json_obj["quality_metrics"][metric], metric_type):
+                                json_obj["quality_metrics"][metric] = float(json_obj["quality_metrics"][metric])
                     
                     result = ReviewResult.parse_obj(json_obj)
                     results.append(result)
-                    logger.info("Successfully analyzed chunk {}/{}", i + 1, len(chunks))
+                    logger.info("Successfully analyzed chunk {}/{} for commit: {}", 
+                                i + 1, len(chunks) if chunks else 0, 
+                                context.metadata.get("commit_id", "unknown")[:8] if context and hasattr(context, 'metadata') else "unknown")
                 except json.JSONDecodeError as json_error:
-                    logger.error("JSON parsing error: {} at position {}", str(json_error), json_error.pos)
+                    logger.error("JSON parsing error at position {} in response of size {}: {}", 
+                                 getattr(json_error, 'pos', 0), 
+                                 len(str(response)) if response else 0, 
+                                 str(json_error))
                     raise
                 except Exception as parse_error:
-                    logger.error("Error parsing LLM response: {}", str(parse_error))
+                    logger.error("Error parsing LLM response of size {}: {}", 
+                                 len(str(response)) if response else 0, 
+                                 str(parse_error))
                     # 返回一个默认的评审结果
                     results.append(ReviewResult(
                         score=0,
@@ -336,12 +418,16 @@ class LLMService:
                         )
                     ))
             except Exception as e:
-                logger.error("Error getting LLM response: {}", str(e))
+                logger.error("Error getting LLM response for model {}: {}", 
+                             self.model_name if hasattr(self, 'model_name') else "unknown", 
+                             str(e))
                 raise
         
         # 合并所有chunk的结果
         if not results:
-            logger.warning("No valid results for commit: {}", context.metadata["commit_id"][:8])
+            logger.warning("No valid results for commit: {} in model: {}", 
+                           context.metadata.get("commit_id", "unknown")[:8] if context and hasattr(context, 'metadata') else "unknown", 
+                           self.model_name if hasattr(self, 'model_name') else "unknown")
             return ReviewResult(
                 score=0,
                 issues=[],
@@ -368,5 +454,6 @@ class LLMService:
         )
         
         logger.info("Analysis completed for commit {} with final score: {}", 
-                   context.metadata["commit_id"][:8], final_result.score)
+                    context.metadata.get("commit_id", "unknown")[:8] if context and hasattr(context, 'metadata') else "unknown", 
+                    final_result.score if final_result and hasattr(final_result, 'score') else 0.0)
         return final_result 
