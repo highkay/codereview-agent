@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>代码评审Agent配置</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-8">代码评审Agent配置</h1>
+        
+        <form hx-post="/config" hx-target="this" hx-swap="none" class="space-y-8 bg-white p-6 rounded-lg shadow">
+            <!-- Gitea配置 -->
+            <div class="space-y-4">
+                <h2 class="text-xl font-semibold">Gitea配置</h2>
+                <div class="grid grid-cols-1 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">服务器URL</label>
+                        <input type="url" name="scm.url" required value="{{ config.scm.url }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">API Token</label>
+                        <input type="password" name="scm.token" required value="{{ config.scm.token }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">上下文窗口大小</label>
+                        <input type="number" name="scm.context_window" min="1" max="20" value="{{ config.scm.context_window }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                </div>
+            </div>
+
+            <!-- LLM配置 -->
+            <div class="space-y-4">
+                <h2 class="text-xl font-semibold">LLM配置</h2>
+                <div class="grid grid-cols-1 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">模型名称</label>
+                        <input type="text" name="llm.model" value="{{ config.llm.model }}" required
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">API密钥</label>
+                        <input type="password" name="llm.api_key" required value="{{ config.llm.api_key }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">最大Token数</label>
+                        <input type="number" name="llm.max_tokens" min="1024" max="100000" value="{{ config.llm.max_tokens }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 评审配置 -->
+            <div class="space-y-4">
+                <h2 class="text-xl font-semibold">评审配置</h2>
+                <div class="grid grid-cols-1 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">质量阈值分数</label>
+                        <input type="number" name="review.quality_threshold" min="0" max="10" step="0.1" value="{{ config.review.quality_threshold }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">忽略文件模式（每行一个）</label>
+                        <textarea name="review.ignore_patterns" rows="4"
+                                  class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">{% for pattern in config.review.ignore_patterns %}{{ pattern }}
+{% endfor %}</textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 评分规则权重 -->
+            <div class="space-y-4">
+                <h2 class="text-xl font-semibold">评分规则权重</h2>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">安全性权重</label>
+                        <input type="number" name="review.scoring_rules.security" min="0" max="1" step="0.1" value="{{ config.review.scoring_rules.security }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">性能权重</label>
+                        <input type="number" name="review.scoring_rules.performance" min="0" max="1" step="0.1" value="{{ config.review.scoring_rules.performance }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">可读性权重</label>
+                        <input type="number" name="review.scoring_rules.readability" min="0" max="1" step="0.1" value="{{ config.review.scoring_rules.readability }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">最佳实践权重</label>
+                        <input type="number" name="review.scoring_rules.best_practice" min="0" max="1" step="0.1" value="{{ config.review.scoring_rules.best_practice }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-end space-x-4">
+                <button type="reset"
+                        class="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    重置
+                </button>
+                <button type="submit"
+                        class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    保存
+                </button>
+            </div>
+        </form>
+
+        <!-- 消息提示 -->
+        <div id="message" class="fixed top-4 right-4 hidden">
+            <div class="bg-green-500 text-white px-6 py-4 rounded-lg shadow-lg">
+                配置已保存
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.body.addEventListener('configSaved', function() {
+            const message = document.getElementById('message');
+            message.classList.remove('hidden');
+            setTimeout(() => {
+                message.classList.add('hidden');
+            }, 3000);
+        });
+    </script>
+</body>
+</html> 

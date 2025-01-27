@@ -1,0 +1,11 @@
+-i https://pypi.tuna.tsinghua.edu.cn/simple
+fastapi
+uvicorn
+pydantic
+aiohttp
+python-multipart
+jinja2
+tiktoken
+htmx
+loguru
+litellm
